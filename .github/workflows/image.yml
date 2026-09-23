@@ -1,0 +1,59 @@
+name: imagen del pod
+
+# Se buildea en GitHub, no en la maquina de Federico: no hace falta Docker
+# Desktop ni credenciales de registry a mano, y el build queda reproducible.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - '.github/workflows/image.yml'
+  workflow_dispatch:
+    inputs:
+      nvidia_drivers:
+        description: 'Versiones de driver a cachear, separadas por espacio (vacio = ninguna)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # El runner viene con ~14 GB libres y la imagen base de runpod ya pesa
+      # bastante. Sin esto el build se cae por disco cuando se cachean drivers.
+      - name: hacer lugar en el runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/byte-streamer:latest
+            ghcr.io/${{ github.repository_owner }}/byte-streamer:${{ github.sha }}
+          build-args: |
+            NVIDIA_DRIVERS=${{ github.event.inputs.nvidia_drivers }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: recordatorio
+        run: |
+          echo "El paquete de ghcr arranca PRIVADO."
+          echo "RunPod no tiene credenciales nuestras, asi que hay que ponerlo"
+          echo "publico una sola vez desde Packages -> byte-streamer -> settings."
+          echo "La imagen no lleva secretos: perfil y claves RTMP van por scp."
