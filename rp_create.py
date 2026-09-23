@@ -17,6 +17,32 @@ if SKIP:
 # no tiene credenciales nuestras. Para volver a la base pelada:
 #   BYTE_IMAGE=runpod/base:1.1.0-ubuntu2404 ./byte-stream.sh up
 IMAGE = os.environ.get("BYTE_IMAGE") or "ghcr.io/filippello/byte-streamer:latest"
+
+def chequear_ghcr(img):
+    """Un pod que no puede bajar la imagen igual se alquila y igual se cobra.
+    Mejor fallar ANTES de rentar nada."""
+    if not img.startswith("ghcr.io/"):
+        return
+    repo, _, tag = img[len("ghcr.io/"):].partition(":")
+    tok = subprocess.run(["curl","-s","--max-time","20",
+        f"https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io"],
+        capture_output=True, text=True).stdout
+    try: tok = json.loads(tok).get("token","")
+    except Exception: tok = ""
+    code = subprocess.run(["curl","-s","-o","/dev/null","-w","%{http_code}",
+        "--max-time","20","-H",f"Authorization: Bearer {tok}",
+        "-H","Accept: application/vnd.oci.image.index.v1+json,"
+             "application/vnd.docker.distribution.manifest.list.v2+json",
+        f"https://ghcr.io/v2/{repo}/manifests/{tag or 'latest'}"],
+        capture_output=True, text=True).stdout.strip()
+    if code != "200":
+        print(f"la imagen {img} no se puede bajar sin credenciales (HTTP {code}).")
+        print("RunPod no tiene login nuestro: hay que poner el paquete PUBLICO una")
+        print(f"sola vez en https://github.com/users/{repo.split('/')[0]}/packages/container/{repo.split('/')[-1]}/settings")
+        print("Mientras tanto se puede arrancar con la base pelada:")
+        print("  BYTE_IMAGE=runpod/base:1.1.0-ubuntu2404 ./byte-stream.sh up")
+        sys.exit(1)
+
 def try_create(gpu, cloud):
     body = {"name":"byte-streamer","imageName":IMAGE,
             "gpuTypeIds":[gpu],"gpuCount":1,"containerDiskInGb":25,"volumeInGb":0,
@@ -27,6 +53,8 @@ def try_create(gpu, cloud):
         "-d",json.dumps(body),"https://rest.runpod.io/v1/pods"],capture_output=True,text=True)
     try: return json.loads(p.stdout)
     except Exception: return {"error":p.stdout[:200]}
+chequear_ghcr(IMAGE)
+
 # BYTE_CLOUD: forzar un solo tipo de nube. COMMUNITY es mas barato pero son
 # maquinas de terceros: el host puede aceptar el alquiler y no provisionar nunca
 # (pod RUNNING, runtime null, podHostId null). SECURE son datacenters de RunPod.

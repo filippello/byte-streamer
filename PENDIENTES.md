@@ -7,13 +7,11 @@ Estado al 2026-09-12. Lo que ya está hecho vive en `README.md` y en la skill
 
 ## A. Para construir acá (elegidas para después)
 
-### A1. Imagen Docker
-Hornear deps + Chrome + `websocket-client` en una imagen propia. Baja el arranque
-y elimina la varianza de `apt`. **El driver NVIDIA no se puede hornear**: la
-versión de userspace tiene que coincidir con el kernel del host y cada host trae
-otra, así que `pod-setup.sh` seguiría instalándolo al arrancar.
-Necesita: Docker Desktop corriendo + credenciales de un registry.
-Valor: medio. Es habilitador de A2 y A3 más que un fin.
+### A1. Imagen Docker — HECHA (2026-09-23)
+`docker/Dockerfile` + `.github/workflows/image.yml`. Se buildea en GitHub, así
+que no hizo falta Docker Desktop ni credenciales de registry a mano.
+Queda: ponerla **pública** en ghcr (una vez, a mano) y medir el primer `up` real
+para decidir si vale cachear instaladores de driver (`ARG NVIDIA_DRIVERS`).
 
 ### A2. Servicio con API propia
 `POST /streams {sessionId, destinos}` dueño del ciclo de vida del pod. Desacopla,
@@ -49,6 +47,20 @@ que el OAuth de Twitch esté atado a una máquina.
 
 **Sirve a cualquiera** que quiera operar byte remoto, no sólo a nosotros — y es
 chico comparado con provisionar pods.
+
+**Actualización 2026-09-23.** Federico quiere un botón en byte que lance el pod
+y se ponga a streamear solo. Con eso B1 deja de ser una comodidad: es el
+bloqueador. Un botón sin token de canje significaría copiar cookies de usuarios
+a máquinas alquiladas a terceros. La forma pedida, concreta:
+
+1. **Emisión no interactiva**, por API con la credencial del dueño. Sin magic
+   link ni mail: si hay un humano en el flujo, no hay botón.
+2. **Un solo uso y TTL corto** (minutos). Se consume en el arranque, no necesita
+   durar más. Ej: `…/arena/<id>?op=<token>`, el frontend lo canjea y lo quema.
+3. **Alcance acotado**: un agente, una sesión, sólo lo que necesita un operador
+   remoto. Nunca una credencial de cuenta entera.
+4. **Que traiga también el token de Twitch**, que hoy vive en el `localStorage`
+   de *ese* browser. Es la mitad del problema del tarball.
 
 ### B2. Perilla de tamaño del avatar en `half` y `full` — HECHO (sin mergear)
 

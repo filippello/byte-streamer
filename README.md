@@ -260,10 +260,19 @@ Las claves se pueden pisar por entorno, o apuntar a otro archivo con
 - **Chat de pump**: falta el mint de la moneda. Es un `chat pump <mint>` y listo.
 - **El fondo de la habitación** dentro del círculo de Mario viene renderizado en
   el 3D (setting "Lobby" del agente), no se saca por CSS.
-- **Imagen Docker**: el `Dockerfile` está pensado pero sin construir — falta
-  Docker Desktop corriendo y un login de registry. Bajaría el arranque de ~6 min
-  a menos de 1. El driver NVIDIA **no** se puede hornear: la versión de userspace
-  tiene que coincidir con el kernel del host, y cada host trae otra.
+- **Imagen Docker: HECHA** (`docker/Dockerfile`). Se buildea sola en GitHub
+  Actions y sale a `ghcr.io/filippello/byte-streamer:latest`. Trae apt, Chrome y
+  `websocket-client` horneados sobre `runpod/base` (esa base es la que levanta
+  sshd con la `PUBLIC_KEY`, por eso no se cambia). `pod-setup.sh` ve la marca
+  `/root/IMAGE_BAKED` y se saltea todo eso.
+  El driver NVIDIA sigue instalándose al arrancar: la versión de userspace tiene
+  que coincidir con el kernel del host y cada host trae otra. Lo que sí se puede
+  es **cachear instaladores** de las versiones que vemos seguido, con
+  `--build-arg NVIDIA_DRIVERS="580.95.05 ..."`. Está vacío hasta medir: cada
+  versión son ~400 MB de imagen. Los `###` de `setup.log` dicen dónde se va el
+  tiempo.
+  **El paquete de ghcr arranca privado**: hay que ponerlo público una vez o
+  RunPod no lo puede bajar. `rp_create.py` lo chequea *antes* de alquilar nada.
 - **Sync de audio: arreglado pero SIN PROBAR.** El 2026-09-09 Federico reportó
   que el audio se oía desfasado. Causa encontrada en el log: `thread_queue_size`
   en el default (**8**) con 4 warnings de bloqueo en las dos entradas, y ninguna
