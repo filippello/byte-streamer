@@ -14,6 +14,8 @@
 #   ./byte-stream.sh api '<js>'              llama window.byte  (ej: api 'byte.state()')
 #   ./byte-stream.sh look                    lee #byte-state (estado legible por maquina)
 #   ./byte-stream.sh present <bubble|half|full> [px]
+#   ./byte-stream.sh keep "<juego>" <horas>   al terminar una corrida redeploya el
+#                                            mismo juego y sigue al aire hasta el tope
 #   ./byte-stream.sh guard-bg                vigila la run DETACHADO (lo normal): corta el
 #                                            stream y DESTRUYE el pod al terminar la corrida
 #   ./byte-stream.sh guard                   idem, pero atado a esta terminal
@@ -131,6 +133,23 @@ look)
 present)
   load; A="${2:?uso: $0 present bubble|half|full [px]}"; B="${3:-330}"
   sshp "python3 /opt/streamer/cdp.py eval 'JSON.stringify(byte.present({avatar:\"$A\",bubble:$B}) ?? \"ok\")'" ;;
+keep)
+  # Modo "transmitime esto por N horas". Una sola corrida casi nunca llega:
+  # Fight Night se queda sin presupuesto de llamadas mucho antes. Esto le deja
+  # dicho al watchdog del pod que, cuando una corrida termine, redeploye el
+  # mismo juego y siga al aire, hasta la hora tope.
+  load
+  G="${2:?uso: $0 keep \"<juego>\" <horas>}"; H="${3:-2}"
+  UNTIL=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$H")
+  P="${REMOTE_PARAMS:-remote=1&scene=cinema&avatar=half&chrome=0}"
+  # %q y no %s: el nombre del juego lleva espacios y guion largo, y los params
+  # llevan '&'. Sin comillas, el `.` del watchdog leia "KEEP_GAME=PUMP.RPG" y
+  # despues intentaba EJECUTAR el resto — KEEP_GAME quedaba vacio y el modo keep
+  # se apagaba en silencio, diciendo que estaba armado.
+  printf 'KEEP_GAME=%q\nKEEP_UNTIL=%q\nKEEP_PARAMS=%q\n' "$G" "$UNTIL" "$P" \
+    | sshp "cat > /root/.keep"
+  echo "al terminar cada corrida redeploya \"$G\" — corta en $H h ($(date -r "$UNTIL" '+%H:%M'))"
+  ;;
 guard-bg)
   # `guard` detachado, que es como hay que usarlo casi siempre. Lanzado como
   # tarea de fondo de una sesion de Claude lo matan a los pocos segundos (visto
