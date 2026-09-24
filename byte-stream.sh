@@ -57,7 +57,16 @@ up)
     PORT=$(echo "$R" | python3 -c 'import sys,json;d=json.load(sys.stdin);print((d.get("portMappings") or {}).get("22") or "")')
     [ -n "$PORT" ] && break; sleep 12
   done
-  [ -z "${PORT:-}" ] && { echo "el pod no expuso SSH"; exit 1; }
+  # Un pod que nunca expone SSH IGUAL se alquila y se cobra. Salir sin
+  # destruirlo deja un huerfano que ni siquiera queda en .state, asi que nadie
+  # se entera hasta mirar la factura. Pasa seguido en COMMUNITY: el host acepta
+  # el alquiler y no provisiona nunca.
+  if [ -z "${PORT:-}" ]; then
+    echo "el pod no expuso SSH — destruyendolo para no pagarlo de gusto"
+    "$DIR/rp_destroy.sh" "$POD" || echo "NO SE PUDO DESTRUIR $POD — borralo a mano"
+    echo "probá de nuevo, y si se repite forzá datacenter: BYTE_CLOUD=SECURE $0 up"
+    exit 1
+  fi
   printf 'POD=%s\nIP=%s\nPORT=%s\n' "$POD" "$IP" "$PORT" > "$STATE"
   echo "pod $POD en $IP:$PORT"
   echo "subiendo scripts y perfil…"
