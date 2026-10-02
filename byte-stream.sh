@@ -167,6 +167,15 @@ keep)
   G="${2:?uso: $0 keep \"<juego>\" <horas>}"; H="${3:-2}"
   UNTIL=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$H")
   P="${REMOTE_PARAMS:-remote=1&scene=cinema&avatar=half&chrome=0}"
+  # byte.present() NO persiste: al redeployar, la escala del avatar vuelve a 1 y
+  # el personaje aparece mas chico. Paso el valor VIVO a los params de la URL,
+  # que si se respetan al cargar. Nos paso el 2026-10-02 con avatarScale 1.5.
+  ESC=$(sshp "timeout 25 python3 /opt/streamer/cdp.py eval 'byte.state().avatarScale'" 2>/dev/null \
+        | tr -d '"' | tr -d '[:space:]')
+  case "$ESC" in
+    ''|1|1.0|null) : ;;
+    *) P="${P}&avatarScale=${ESC}"; echo "llevo avatarScale=$ESC en los params" ;;
+  esac
   # %q y no %s: el nombre del juego lleva espacios y guion largo, y los params
   # llevan '&'. Sin comillas, el `.` del watchdog leia "KEEP_GAME=PUMP.RPG" y
   # despues intentaba EJECUTAR el resto — KEEP_GAME quedaba vacio y el modo keep
