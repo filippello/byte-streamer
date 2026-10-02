@@ -49,7 +49,17 @@ except Exception: print("|")' 2>/dev/null
 # Redeploya el juego y vuelve a poner el modo consola. Devuelve el sessionId
 # nuevo, o vacio si no pudo.
 redeploy() {
-  python3 /opt/streamer/deploy-game.py "$KEEP_GAME" >> "$LOG" 2>&1
+  # Cerrar lo anterior antes de abrir lo nuevo: si queda una sesion viva del lado
+  # del servidor, el deploy choca con "this agent is already playing". byte
+  # encadena solo, asi que puede haber una aunque la que vigilabamos termino.
+  python3 /opt/streamer/cdp.py eval \
+    '(async()=>{try{return JSON.stringify((await byte.stop()) ?? "ok")}catch(e){return "sin byte: "+e.message}})()' \
+    >> "$LOG" 2>&1
+  sleep 5
+  if ! python3 /opt/streamer/deploy-game.py "$KEEP_GAME" >> "$LOG" 2>&1; then
+    echo "$(date -Is) deploy-game fallo (el motivo quedo arriba en este log)" >> "$LOG"
+    return 1
+  fi
   local nuevo
   nuevo=$(python3 /opt/streamer/cdp.py eval \
     '(location.href.match(/\/arena\/([a-z0-9_]+)/)||[])[1] ?? ""' 2>/dev/null \
