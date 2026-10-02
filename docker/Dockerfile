@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 \
       libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
       libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libvulkan1 mesa-utils \
+      x11vnc novnc websockify openbox \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -q -O /tmp/chrome.deb \

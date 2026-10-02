@@ -248,7 +248,8 @@ health) load; sshp "/root/health.sh" ;;
 shot)
   load; sshp "DISPLAY=:1 import -window root /root/shot.png" && scpp "root@$IP:/root/shot.png" "${2:-./shot.png}" && echo "guardado en ${2:-./shot.png}" ;;
 vnc)
-  load; sshp "/root/vnc-up.sh"
+  load
+  sshp "/root/vnc-up.sh" || { echo "noVNC no levanto — mirá /root/vnc-up.log en el pod"; exit 1; }
   echo; echo "1) en otra terminal, dejá corriendo:"
   echo "   ssh -i $KEY -N -L 6080:localhost:6080 -p $PORT root@$IP"
   echo "2) abrí: http://localhost:6080/vnc.html"
