@@ -60,6 +60,9 @@ redeploy() {
   python3 /opt/streamer/cdp.py nav "https://app.bytearena.fun/arena/${nuevo}?${KEEP_PARAMS}" >> "$LOG" 2>&1
   sleep 8
   /root/fullscreen.sh >> "$LOG" 2>&1
+  # El CSS inyectado no sobrevive a la navegacion: sin esto el zoom del iframe se
+  # perdia en la primera corrida encadenada y nadie se enteraba hasta ver el stream.
+  python3 /opt/streamer/inject-css.py >> "$LOG" 2>&1
   printf '%s' "$nuevo"
 }
 

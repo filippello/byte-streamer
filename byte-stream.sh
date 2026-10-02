@@ -14,6 +14,7 @@
 #   ./byte-stream.sh api '<js>'              llama window.byte  (ej: api 'byte.state()')
 #   ./byte-stream.sh look                    lee #byte-state (estado legible por maquina)
 #   ./byte-stream.sh present <bubble|half|full> [px]
+#   ./byte-stream.sh zoom <factor>           achica el iframe del juego (0.8 = 80%)
 #   ./byte-stream.sh keep "<juego>" <horas>   al terminar una corrida redeploya el
 #                                            mismo juego y sigue al aire hasta el tope
 #   ./byte-stream.sh ttl <horas>             cambia la hora de muerte del pod (default 3h,
@@ -144,6 +145,19 @@ look)
 present)
   load; A="${2:?uso: $0 present bubble|half|full [px]}"; B="${3:-330}"
   sshp "python3 /opt/streamer/cdp.py eval 'JSON.stringify(byte.present({avatar:\"$A\",bubble:$B}) ?? \"ok\")'" ;;
+zoom)
+  # Achica (o agranda) el iframe del juego dentro de la escena cinema. byte no
+  # expone ninguna perilla para esto, asi que va por CSS desde la pagina padre,
+  # que es same-origin; el contenido de adentro del iframe no se toca.
+  # transform y no width/height a proposito: el juego se sigue renderizando a
+  # resolucion completa y solo se MUESTRA mas chico, asi no pierde nitidez.
+  load
+  F="${2:?uso: $0 zoom <factor>   (ej: $0 zoom 0.8 = 80%)}"
+  printf '.game-iframe{transform:scale(%s);transform-origin:center center;}\n' "$F" \
+    | sshp "cat > /root/.cinema-css"
+  sshp "python3 /opt/streamer/inject-css.py"
+  echo "iframe al $(python3 -c 'import sys;print(int(float(sys.argv[1])*100))' "$F")% — se reaplica solo despues de cada redeploy"
+  ;;
 keep)
   # Modo "transmitime esto por N horas". Una sola corrida casi nunca llega:
   # Fight Night se queda sin presupuesto de llamadas mucho antes. Esto le deja
