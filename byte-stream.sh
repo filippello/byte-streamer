@@ -214,6 +214,21 @@ guard)
   # El TTL es independiente de la corrida: si la run no termina nunca, igual hay
   # una hora en la que el pod se cae. Es la leccion del pod que vivio 34h37m.
   sshp "/root/start-ttl.sh" || echo "OJO: el TTL del pod no arranco — queda solo la capa local"
+  # Los logs del pod mueren CON el pod. El 2026-10-02 el modo keep no pudo
+  # redeployar, el watchdog corto bien y el guard destruyo bien, pero el motivo
+  # estaba en /root/watchdog.log y se fue con la maquina: nos quedamos sin la
+  # evidencia justo del caso que habia que depurar. Antes de destruir, se baja.
+  rescatar_logs(){
+    local dest="$DIR/logs/$POD-$(date +%Y%m%d-%H%M)"
+    mkdir -p "$dest"
+    for f in watchdog.log ttl.log setup.log desktop.status chrome.log; do
+      sshp "cat /root/$f 2>/dev/null" > "$dest/$f" 2>/dev/null
+    done
+    sshp "for l in /root/ffmpeg.*.log; do [ -e \"\$l\" ] && { echo \"=== \$l ===\"; tail -40 \"\$l\"; }; done" \
+      > "$dest/ffmpeg.txt" 2>/dev/null
+    find "$dest" -size 0 -delete 2>/dev/null
+    echo "logs del pod guardados en $dest"
+  }
   echo "vigilando $POD — al terminar la run: corta el stream y destruye el pod"
   [ "${DEADLINE:-0}" -gt 0 ] && echo "TTL: a las $(date -r "$DEADLINE" '+%H:%M') lo destruyo aunque siga corriendo"
   while true; do
@@ -221,6 +236,7 @@ guard)
     # seguir pagando mas alla de lo pactado.
     if [ "${DEADLINE:-0}" -gt 0 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
       echo "venció el TTL — destruyendo el pod"
+      rescatar_logs
       "$DIR/rp_destroy.sh" "$POD"; rm -f "$STATE"; echo "pod destruido, gasto en 0"; exit 0
     fi
     R=$(sshp "cat /root/RUN_ENDED /root/TTL_VENCIDO 2>/dev/null" 2>/dev/null)
@@ -228,6 +244,7 @@ guard)
       # $R ya viene con su propia etiqueta desde watch-run.sh ("status=finished",
       # "cambio de sesion (...)"), asi que aca NO se le antepone nada.
       echo "la run termino ($R) — stream cortado por el pod; destruyendo…"
+      rescatar_logs
       "$DIR/rp_destroy.sh" "$POD"; rm -f "$STATE"; echo "pod destruido, gasto en 0"; exit 0
     fi
     # Un SSH que falla NO prueba que el pod se murio: puede ser un hipo de red.
