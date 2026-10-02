@@ -16,6 +16,8 @@
 #   ./byte-stream.sh present <bubble|half|full> [px]
 #   ./byte-stream.sh keep "<juego>" <horas>   al terminar una corrida redeploya el
 #                                            mismo juego y sigue al aire hasta el tope
+#   ./byte-stream.sh ttl <horas>             cambia la hora de muerte del pod (default 3h,
+#                                            o BYTE_TTL_HORAS=N al hacer `up`)
 #   ./byte-stream.sh guard-bg                vigila la run DETACHADO (lo normal): corta el
 #                                            stream y DESTRUYE el pod al terminar la corrida
 #   ./byte-stream.sh guard                   idem, pero atado a esta terminal
@@ -94,6 +96,15 @@ up)
         cat /root/desktop.status"
   echo "rehaciendo login de byte (la cookie no viaja en el perfil)…"
   sshp "python3 /opt/streamer/relogin.py"
+  # TTL desde el minuto cero, no desde que alguien se acuerde de armarlo. Se
+  # puede pisar antes (BYTE_TTL_HORAS=5 ./byte-stream.sh up) o despues
+  # ($0 ttl <horas>). Default conservador: una corrida tipica dura 1-2 h.
+  TTLH="${BYTE_TTL_HORAS:-3}"
+  D=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$TTLH")
+  printf 'DEADLINE=%s\n' "$D" | sshp "cat > /root/.ttl"
+  printf 'DEADLINE=%s\n' "$D" >> "$STATE"
+  sshp "/root/start-ttl.sh" || echo "OJO: el TTL del pod no arranco"
+  echo "TTL: $TTLH h — el pod se apaga solo a las $(date -r "$D" '+%H:%M')"
   ;;
 deploy) load; sshp "python3 /opt/streamer/deploy-game.py '${2:-Infinite Cinema}'"; sshp "/root/fullscreen.sh; python3 /opt/streamer/stream-mode.py" ;;
 go)
@@ -150,6 +161,18 @@ keep)
     | sshp "cat > /root/.keep"
   echo "al terminar cada corrida redeploya \"$G\" — corta en $H h ($(date -r "$UNTIL" '+%H:%M'))"
   ;;
+ttl)
+  # Cambia la hora de muerte con el pod ya andando. ttl.sh relee /root/.ttl en
+  # cada vuelta, asi que no hay que reiniciar nada. El guard local lee .state.
+  load
+  H="${2:?uso: $0 ttl <horas desde ahora>   (ej: $0 ttl 2)}"
+  D=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$H")
+  printf 'DEADLINE=%s\n' "$D" | sshp "cat > /root/.ttl"
+  grep -v '^DEADLINE=' "$STATE" > "$STATE.tmp" 2>/dev/null; mv "$STATE.tmp" "$STATE"
+  printf 'DEADLINE=%s\n' "$D" >> "$STATE"
+  echo "TTL: el pod se apaga a las $(date -r "$D" '+%H:%M') (en $H h)"
+  echo "ojo: si el guard ya esta corriendo, releva el deadline viejo — relanzalo con $0 guard-bg"
+  ;;
 guard-bg)
   # `guard` detachado, que es como hay que usarlo casi siempre. Lanzado como
   # tarea de fondo de una sesion de Claude lo matan a los pocos segundos (visto
@@ -174,9 +197,19 @@ guard)
   # si el pkill viaja por SSH, el patron matchea el propio shell remoto y se
   # mata solo antes de arrancar nada. Detalle en pod/start-watchdog.sh.
   sshp "/root/start-watchdog.sh" || { echo "sin watchdog en el pod — abortando para no dejarte un stream sin vigilancia"; exit 1; }
+  # El TTL es independiente de la corrida: si la run no termina nunca, igual hay
+  # una hora en la que el pod se cae. Es la leccion del pod que vivio 34h37m.
+  sshp "/root/start-ttl.sh" || echo "OJO: el TTL del pod no arranco — queda solo la capa local"
   echo "vigilando $POD — al terminar la run: corta el stream y destruye el pod"
+  [ "${DEADLINE:-0}" -gt 0 ] && echo "TTL: a las $(date -r "$DEADLINE" '+%H:%M') lo destruyo aunque siga corriendo"
   while true; do
-    R=$(sshp "cat /root/RUN_ENDED 2>/dev/null" 2>/dev/null)
+    # Tope duro. Va ANTES que todo lo demas: una run viva no es excusa para
+    # seguir pagando mas alla de lo pactado.
+    if [ "${DEADLINE:-0}" -gt 0 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+      echo "venció el TTL — destruyendo el pod"
+      "$DIR/rp_destroy.sh" "$POD"; rm -f "$STATE"; echo "pod destruido, gasto en 0"; exit 0
+    fi
+    R=$(sshp "cat /root/RUN_ENDED /root/TTL_VENCIDO 2>/dev/null" 2>/dev/null)
     if [ -n "$R" ]; then
       # $R ya viene con su propia etiqueta desde watch-run.sh ("status=finished",
       # "cambio de sesion (...)"), asi que aca NO se le antepone nada.
