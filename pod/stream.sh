@@ -31,10 +31,24 @@ fi
 
 # thread_queue_size grande: con el default (8) las dos entradas bloquean y ffmpeg
 # frena la lectura de una mientras la otra sigue -> el audio se desliza contra el
-# video. use_wallclock_as_timestamps les da un reloj comun (X11 y Pulse tienen
-# el suyo), y aresample=async corrige la deriva que igual quede.
+# video. aresample=async corrige la deriva entre los dos relojes (X11 y Pulse
+# tienen el suyo).
+#
+# NO va use_wallclock_as_timestamps. Lo tuvimos del 2026-09-09 al 10-02 y causaba
+# un desfase FIJO de audio adelantado: x11grab tarda unos segundos en entregar su
+# primer frame mientras Pulse ya esta entregando audio, y con reloj de pared esa
+# diferencia de arranque queda grabada como offset en vez de alinearse en cero.
+# Se veia en el log desde la primera linea: "frame=2 ... time=00:00:04.56", o sea
+# 4,5 segundos de salida con dos frames de video. Sin la opcion, las dos entradas
+# arrancan en 0 y se alinean solas; la deriva la sigue manejando aresample.
+#
+# fps_mode cfr: sin esto ffmpeg DESCARTA los frames del arranque en vez de
+# rellenar (se veia "drop=135" fijo en el log), y ese hueco se convierte en un
+# offset permanente de audio adelantado. Con cadencia constante rellena con
+# duplicados y el contador de frames queda en time*fps, que es como se comprueba
+# que esta alineado.
 if pactl list sources short 2>/dev/null | grep -q stream.monitor; then
-  AIN=(-thread_queue_size 1024 -use_wallclock_as_timestamps 1 -f pulse -i stream.monitor)
+  AIN=(-thread_queue_size 1024 -f pulse -i stream.monitor)
   ASYNC=(-af "aresample=async=1000:first_pts=0"); echo "audio: pulse stream.monitor"
 else
   AIN=(-thread_queue_size 1024 -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100")
@@ -55,10 +69,10 @@ for ln in "${LINES[@]}"; do
   (
     while true; do
       ffmpeg -hide_banner -loglevel warning -stats \
-        -thread_queue_size 1024 -use_wallclock_as_timestamps 1 \
+        -thread_queue_size 1024 \
         -f x11grab -framerate "$FPS" -video_size "${WIDTH}x${HEIGHT}" -i :1 \
         "${AIN[@]}" -map 0:v:0 -map 1:a:0 \
-        -vf "scale=${OUT_W}:${OUT_H}" "${ASYNC[@]}" "${VENC[@]}" \
+        -vf "scale=${OUT_W}:${OUT_H}" -fps_mode cfr "${ASYNC[@]}" "${VENC[@]}" \
         -b:v "$BR" -maxrate "$BR" -bufsize "$((${BR%k}*2))k" \
         -pix_fmt yuv420p -g $((FPS*2)) -c:a aac -b:a 128k -ar 44100 \
         -f flv "$URL"

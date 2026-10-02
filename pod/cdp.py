@@ -10,13 +10,29 @@ ws = create_connection(page["webSocketDebuggerUrl"], timeout=90)
 _id = [0]
 def send(m, p=None):
     _id[0] += 1
-    ws.send(json.dumps({"id": _id[0], "method": m, "params": p or {}}))
+    mio = _id[0]          # el id PROPIO: contestar un dialogo consume otro id,
+    ws.send(json.dumps({"id": mio, "method": m, "params": p or {}}))
     while True:
         r = json.loads(ws.recv())
-        if r.get("id") == _id[0]: return r
+        # Navegar fuera de una arena viva dispara el beforeunload del juego y
+        # Chrome abre "Leave site?". Un modal asi FRENA EL RENDERER ENTERO: todo
+        # Runtime.evaluate se cuelga hasta el timeout y desde afuera parece que
+        # Chrome se murio. Peor: tampoco se puede cerrar desde otra conexion,
+        # porque hasta el Page.enable queda bloqueado. Hay que atenderlo ACA, en
+        # el mismo socket que recibe el evento. Antes este bucle tiraba todos los
+        # eventos a la basura esperando su id, asi que nadie lo contestaba.
+        if r.get("method") == "Page.javascriptDialogOpening":
+            _id[0] += 1
+            ws.send(json.dumps({"id": _id[0], "method": "Page.handleJavaScriptDialog",
+                                "params": {"accept": True}}))
+            continue
+        if r.get("id") == mio: return r   # y sin esto no se reconoce la respuesta
 def ev(e):
     r = send("Runtime.evaluate", {"expression": e, "returnByValue": True, "awaitPromise": True})
     return r.get("result", {}).get("result", {}).get("value")
+# Siempre, no solo en nav: el dialogo tambien puede abrirlo un click nuestro, y
+# sin el dominio habilitado el evento no llega y el cuelgue vuelve.
+send("Page.enable")
 if cmd == "eval": print(json.dumps(ev(arg), ensure_ascii=False))
 elif cmd == "nav":
     send("Page.enable"); send("Page.navigate", {"url": arg})
