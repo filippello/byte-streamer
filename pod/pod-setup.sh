@@ -46,6 +46,19 @@ else
   ts "chrome + pip listos"
 fi
 
+# Hay hosts que ya montan las libs GRAFICAS de nvidia, no solo las de computo.
+# En esos el instalador sobra. Chequear primero evita trabajo al pedo y, sobre
+# todo, evita tirar un pod bueno: el 2026-10-03 un host traia el driver
+# 580.126.20, que NVIDIA no publica en su CDN, el .run bajo 0 bytes y el setup
+# aborto — con las 4 libs graficas ya puestas y todo funcionando.
+libs_ok(){ [ "$(ls /usr/lib/x86_64-linux-gnu/ | grep -cE 'EGL_nvidia|GLX_nvidia')" -ge 2 ]; }
+if libs_ok; then
+  ts "el host ya trae las libs graficas de nvidia — me salteo el driver"
+  touch /root/SETUP_DONE
+  ts "FIN — $(( $(date +%s) - T0 ))s en total"
+  exit 0
+fi
+
 cd /root
 RUN="NVIDIA-Linux-x86_64-${DRV}.run"
 if [ -f "/opt/nvidia-cache/$RUN" ]; then
@@ -60,7 +73,11 @@ else
   # El installer de NVIDIA corre sobre un archivo vacio sin quejarse, asi que un
   # wget fallado se veia como un setup exitoso. El .run pesa cientos de MB.
   SZ=$(stat -c %s "/root/$RUN" 2>/dev/null || echo 0)
-  [ "$SZ" -gt 50000000 ] || { ts "EL DRIVER BAJO MAL ($SZ bytes) — url: .../${DRV}/${RUN}"; exit 1; }
+  if [ "$SZ" -le 50000000 ]; then
+    ts "EL DRIVER BAJO MAL ($SZ bytes) — url: .../${DRV}/${RUN}"
+    ts "sin libs graficas y sin instalador: este host no sirve"
+    exit 1
+  fi
   ts "driver bajado ($(du -h "/root/$RUN" | cut -f1))"
 fi
 
