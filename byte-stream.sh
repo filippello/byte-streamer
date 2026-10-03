@@ -264,6 +264,19 @@ guard)
     find "$dest" -size 0 -delete 2>/dev/null
     echo "logs del pod guardados en $dest"
   }
+  # Responde existe | no-existe | no-se. La diferencia entre las dos ultimas es
+  # la que evita abandonar un pod que igual factura.
+  pod_existe(){
+    local k code
+    k="$(cat ~/.runpod/key)"
+    code="$(curl -s -o /tmp/byte-pod.json -w '%{http_code}' --max-time 25 \
+            -H "Authorization: Bearer $k" "https://rest.runpod.io/v1/pods/$POD" 2>/dev/null)"
+    case "$code" in
+      200) grep -q "\"$POD\"" /tmp/byte-pod.json 2>/dev/null && echo existe || echo no-se ;;
+      404) echo no-existe ;;
+      *)   echo no-se ;;
+    esac
+  }
   echo "vigilando $POD — al terminar la run: corta el stream y destruye el pod"
   [ "${DEADLINE:-0}" -gt 0 ] && echo "TTL: a las $(date -r "$DEADLINE" '+%H:%M') lo destruyo aunque siga corriendo"
   while true; do
@@ -293,16 +306,28 @@ guard)
       FALLOS=$((${FALLOS:-0}+1))
       echo "el pod no responde por SSH ($FALLOS/5)"
       if [ "$FALLOS" -ge 5 ]; then
-        # Si la API dice que el pod sigue existiendo, esta facturando: se destruye.
-        # Un pod inalcanzable que igual cobra es exactamente el caso a matar.
-        if "$DIR/byte-stream.sh" status 2>/dev/null | grep -q "$POD"; then
-          echo "sigue vivo para RunPod pero no responde — destruyendo para no pagarlo de gusto"
-          "$DIR/rp_destroy.sh" "$POD"; rm -f "$STATE"; echo "pod destruido, gasto en 0"
-        else
-          echo "el pod ya no existe para RunPod — nada que destruir"
-          rm -f "$STATE"
-        fi
-        exit 0
+        # Tres respuestas posibles, y la tercera es la que nos costo plata:
+        #   existe      -> esta facturando y no responde: se destruye.
+        #   no-existe    -> ya no hay nada que pagar: nos vamos.
+        #   no-se        -> la consulta FALLO. NO es lo mismo que "no existe".
+        # El 2026-10-03 un corte de red tiro los 5 SSH y tambien la consulta a la
+        # API; el codigo viejo preguntaba con `grep -q "$POD"` sobre una salida
+        # vacia, leyo "no existe" y abandono un pod vivo que siguio cobrando a
+        # $0.50/h. Ante la duda NO se abandona: se sigue vigilando y, si no se
+        # recupera, el TTL termina forzando el destroy.
+        case "$(pod_existe)" in
+          existe)
+            echo "sigue vivo para RunPod pero no responde — destruyendo para no pagarlo de gusto"
+            rescatar_logs
+            "$DIR/rp_destroy.sh" "$POD"; rm -f "$STATE"; echo "pod destruido, gasto en 0"
+            exit 0 ;;
+          no-existe)
+            echo "el pod ya no existe para RunPod — nada que destruir"
+            rm -f "$STATE"; exit 0 ;;
+          *)
+            echo "no pude confirmar con RunPod si el pod existe — NO lo abandono, sigo vigilando"
+            FALLOS=0 ;;
+        esac
       fi
     fi
     sleep 60
