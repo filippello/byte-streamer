@@ -15,6 +15,8 @@
 #   ./byte-stream.sh look                    lee #byte-state (estado legible por maquina)
 #   ./byte-stream.sh present <bubble|half|full> [px]
 #   ./byte-stream.sh zoom <factor>           achica el iframe del juego (0.8 = 80%)
+#   ./byte-stream.sh carrusel "A|B|C" <horas> [min]   rota entre juegos, cambiando
+#                                            recien al terminar cada partida
 #   ./byte-stream.sh keep "<juego>" <horas>   al terminar una corrida redeploya el
 #                                            mismo juego y sigue al aire hasta el tope
 #   ./byte-stream.sh ttl <horas>             cambia la hora de muerte del pod (default 3h,
@@ -76,7 +78,7 @@ up)
   echo "pod $POD en $IP:$PORT"
   echo "subiendo scripts y perfil…"
   scpp "$DIR"/pod/* "$PROFILE" "root@$IP:/root/" >/dev/null
-  sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
+  sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py cdp-dialog.py inject-css.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
   echo "preparando el pod…"
   sshp "setsid nohup /root/pod-setup.sh >/dev/null 2>&1 </dev/null & echo lanzado"
   # Poll corto: el paso dura entre ~40s (imagen horneada) y ~6 min (base pelada),
@@ -157,6 +159,30 @@ zoom)
     | sshp "cat > /root/.cinema-css"
   sshp "python3 /opt/streamer/inject-css.py"
   echo "iframe al $(python3 -c 'import sys;print(int(float(sys.argv[1])*100))' "$F")% — se reaplica solo despues de cada redeploy"
+  ;;
+carrusel)
+  # Rota entre varios juegos dandole a cada uno un turno. El cambio ocurre al
+  # TERMINAR una partida, no al cumplirse el turno: asi no se corta ninguna
+  # partida por la mitad. La transicion por el dashboard la tapa placa.sh.
+  load
+  LISTA="${2:?uso: $0 carrusel \"Juego A|Juego B|Juego C\" <horas> [min por juego]}"
+  H="${3:-4}"; MIN="${4:-30}"
+  UNTIL=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$H")
+  TURNO=$(python3 -c 'import sys; print(int(float(sys.argv[1])*60))' "$MIN")
+  P="${REMOTE_PARAMS:-remote=1&scene=cinema&avatar=half&chrome=0}"
+  # byte.present() NO persiste: al cambiar de juego la escala del avatar vuelve
+  # a 1. Va en los params, que si se respetan al cargar.
+  ESC=$(sshp "timeout 25 python3 /opt/streamer/cdp.py eval 'byte.state().avatarScale'" 2>/dev/null \
+        | tr -d '"' | tr -d '[:space:]')
+  case "$ESC" in
+    ''|1|1.0|null) : ;;
+    *) P="${P}&avatarScale=${ESC}"; echo "llevo avatarScale=$ESC en los params" ;;
+  esac
+  printf 'KEEP_GAMES=%q\nKEEP_TURNO=%q\nKEEP_UNTIL=%q\nKEEP_PARAMS=%q\n' \
+    "$LISTA" "$TURNO" "$UNTIL" "$P" | sshp "cat > /root/.keep"
+  echo "carrusel armado — $MIN min por juego, corta en $H h ($(date -r "$UNTIL" '+%H:%M'))"
+  printf '%s\n' "$LISTA" | tr '|' '\n' | sed 's/^/  · /'
+  echo "ojo: si el watchdog ya esta corriendo, relanzalo para que lo tome ($0 guard-bg)"
   ;;
 keep)
   # Modo "transmitime esto por N horas". Una sola corrida casi nunca llega:
