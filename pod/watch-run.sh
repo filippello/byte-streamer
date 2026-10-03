@@ -45,7 +45,24 @@ elif [ -n "$KEEP_GAME" ]; then
   JUEGOS=("$KEEP_GAME")
   echo "$(date -Is) modo keep: redeploya \"$KEEP_GAME\" hasta $(date -Is -d @"$KEEP_UNTIL")" >> "$LOG"
 fi
-TURNO_FIN=$(( $(date +%s) + KEEP_TURNO ))
+# El estado del carrusel vive en disco, NO en memoria del proceso. El 2026-10-03
+# reinicie el watchdog dos veces para arreglar otra cosa y cada reinicio volvia a
+# IDX=0 con el turno en cero: el carrusel se quedo tres horas en Hells Agents.
+ESTADO=/root/.carrusel-estado
+if [ -f "$ESTADO" ]; then
+  . "$ESTADO"
+  echo "$(date -Is) retomo el carrusel donde estaba: ${JUEGOS[$IDX]:-?} (turno vence $(date -Is -d @"$TURNO_FIN"))" >> "$LOG"
+else
+  TURNO_FIN=$(( $(date +%s) + KEEP_TURNO ))
+fi
+guardar_estado(){ printf 'IDX=%s\nTURNO_FIN=%s\n' "$IDX" "$TURNO_FIN" > "$ESTADO"; }
+guardar_estado
+
+# Cuanto se tolera que una partida se pase de su turno. La rotacion espera al fin
+# de partida para no cortar nada al medio, pero sin tope eso deja de ser "30
+# minutos por juego": el 2026-10-03 una corrida de Hells Agents duro 81 minutos
+# sobre un turno de 30. Pasado el turno + esta gracia, se corta la partida.
+GRACIA=${KEEP_GRACIA:-$(( KEEP_TURNO / 2 ))}
 
 # Devuelve "<status>|<sessionId>". Los dos importan: ver mas abajo.
 estado() {
@@ -136,7 +153,7 @@ while true; do
       # Aca se decide si rota o repite.
       if [ "$AHORA" -ge "$TURNO_FIN" ] && [ "${#JUEGOS[@]}" -gt 1 ]; then
         IDX=$(( (IDX + 1) % ${#JUEGOS[@]} ))
-        TURNO_FIN=$(( AHORA + KEEP_TURNO ))
+        TURNO_FIN=$(( AHORA + KEEP_TURNO )); guardar_estado
         echo "$(date -Is) se cumplio el turno — paso a \"${JUEGOS[$IDX]}\"" >> "$LOG"
       else
         echo "$(date -Is) la run termino ($FIN) — sigue el turno de \"${JUEGOS[$IDX]}\"" >> "$LOG"
@@ -151,7 +168,7 @@ while true; do
       # en un carrusel se prueba con el siguiente antes de bajar la persiana.
       if [ "${#JUEGOS[@]}" -gt 1 ]; then
         IDX=$(( (IDX + 1) % ${#JUEGOS[@]} ))
-        TURNO_FIN=$(( AHORA + KEEP_TURNO ))
+        TURNO_FIN=$(( AHORA + KEEP_TURNO )); guardar_estado
         echo "$(date -Is) fallo el anterior — intento con \"${JUEGOS[$IDX]}\"" >> "$LOG"
         NUEVO=$(cambiar_a "${JUEGOS[$IDX]}")
         if [ -n "$NUEVO" ]; then
@@ -166,6 +183,18 @@ while true; do
     [ "${#JUEGOS[@]}" -gt 0 ] && FIN="se cumplio la hora tope ($FIN)"
     cortar "$FIN"
     exit 0
+  fi
+
+  # La partida se paso MUCHO de su turno: se la corta para que el carrusel siga
+  # siendo un carrusel. byte.stop() dispara el fin de corrida y la rotacion sale
+  # por el camino normal de arriba.
+  if [ "${#JUEGOS[@]}" -gt 1 ] && [ "$(date +%s)" -ge $(( TURNO_FIN + GRACIA )) ]; then
+    echo "$(date -Is) \"${JUEGOS[$IDX]}\" se paso $((GRACIA/60))min de su turno — corto la partida para rotar" >> "$LOG"
+    python3 /opt/streamer/cdp.py eval \
+      '(async()=>{try{return JSON.stringify((await byte.stop()) ?? "ok")}catch(e){return "sin byte: "+e.message}})()' \
+      >> "$LOG" 2>&1
+    sleep 10
+    continue
   fi
 
   # Tope de tiempo aunque la corrida siga viva: si no, "4 horas" se vuelve

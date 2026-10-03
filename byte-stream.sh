@@ -180,6 +180,9 @@ carrusel)
   esac
   printf 'KEEP_GAMES=%q\nKEEP_TURNO=%q\nKEEP_UNTIL=%q\nKEEP_PARAMS=%q\n' \
     "$LISTA" "$TURNO" "$UNTIL" "$P" | sshp "cat > /root/.keep"
+  # Un carrusel nuevo arranca de cero: si queda el estado del anterior, retoma en
+  # el juego equivocado o con un turno que no corresponde.
+  sshp "rm -f /root/.carrusel-estado"
   echo "carrusel armado — $MIN min por juego, corta en $H h ($(date -r "$UNTIL" '+%H:%M'))"
   printf '%s\n' "$LISTA" | tr '|' '\n' | sed 's/^/  · /'
   echo "ojo: si el watchdog ya esta corriendo, relanzalo para que lo tome ($0 guard-bg)"

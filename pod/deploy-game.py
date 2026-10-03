@@ -14,9 +14,9 @@ Las tres fallas que puede haber, y que ahora se distinguen:
   - el juego abre un modal de asiento pago/gratis -> se elige el GRATIS
   - el agente sigue jugando la corrida anterior  -> se dice con todas las letras
 
-OJO con el boton: hay que acotarlo a la tarjeta (subir por parentElement hasta
-el primer ancestro que tenga el nombre Y menos de 420 chars), porque si no se
-agarra el DEPLOY del juego de al lado.
+OJO con el boton: hay que acotarlo a la tarjeta, o se agarra el DEPLOY del juego
+de al lado. Ver clickear_juego() para como se hace y por que no con el largo del
+texto.
 """
 import json, sys, time, urllib.request
 from websocket import create_connection
@@ -68,12 +68,26 @@ def hay_tarjetas():
         .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText)).length""") or 0
 
 def clickear_juego(nombre):
+    # Como se ubica la tarjeta: se sube desde cada boton hasta el PRIMER ancestro
+    # que contenga el nombre Y un solo boton de deploy. Esa segunda condicion es
+    # la que evita agarrar un contenedor con varias tarjetas y clickear el juego
+    # de al lado.
+    #
+    # Antes la condicion era "que mida menos de 420 caracteres", un numero magico
+    # que fallaba con los juegos de descripcion larga: el 2026-10-03 el carrusel
+    # no pudo entrar a Degen Realms tres intentos seguidos ("no encontre la
+    # tarjeta... habia 14 juegos en pantalla") porque su texto se pasa de 420.
+    # Peor: dependia del largo del texto, asi que a veces andaba y a veces no.
     return ev("""(()=>{const btns=Array.from(document.querySelectorAll("button"))
       .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText));
+      const esBoton=e=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(e.innerText||"");
       for(const b of btns){let p=b;
-        for(let i=0;i<10&&p;i++){p=p.parentElement; if(!p) break;
+        for(let i=0;i<12&&p;i++){p=p.parentElement; if(!p) break;
           const t=p.innerText||"";
-          if(t.includes(%s) && t.length<420){b.click(); return "ok";}}}
+          if(!t.includes(%s)) continue;
+          const cuantos=Array.from(p.querySelectorAll("button")).filter(esBoton).length;
+          if(cuantos===1){b.click(); return "ok";}
+          break;}}
       return "no-esta";})()""" % json.dumps(nombre), wait=4)
 
 def asiento_gratis():
