@@ -68,26 +68,33 @@ def hay_tarjetas():
         .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText)).length""") or 0
 
 def clickear_juego(nombre):
-    # Como se ubica la tarjeta: se sube desde cada boton hasta el PRIMER ancestro
-    # que contenga el nombre Y un solo boton de deploy. Esa segunda condicion es
-    # la que evita agarrar un contenedor con varias tarjetas y clickear el juego
-    # de al lado.
+    # Se sube desde cada boton de deploy hasta la TARJETA: el ancestro mas grande
+    # que siga teniendo UN SOLO boton de deploy. El titulo es su primera linea.
+    # Despues se exige coincidencia EXACTA de titulo, y recien si no hay se cae a
+    # substring.
     #
-    # Antes la condicion era "que mida menos de 420 caracteres", un numero magico
-    # que fallaba con los juegos de descripcion larga: el 2026-10-03 el carrusel
-    # no pudo entrar a Degen Realms tres intentos seguidos ("no encontre la
-    # tarjeta... habia 14 juegos en pantalla") porque su texto se pasa de 420.
-    # Peor: dependia del largo del texto, asi que a veces andaba y a veces no.
-    return ev("""(()=>{const btns=Array.from(document.querySelectorAll("button"))
-      .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText));
+    # Lo exacto no es capricho: varios nombres son prefijo de otros. Verificado
+    # contra el catalogo real el 2026-10-04, "Backrooms" matcheaba 2 tarjetas
+    # (tambien la "Fruit Fly edition") y "Solana Survivors" matcheaba 3. Con
+    # substring se clickeaba la que apareciera primero, o sea a veces el juego
+    # equivocado y sin que nadie se enterara. Con titulo exacto, los 13 juegos
+    # del catalogo resuelven a una sola tarjeta.
+    return ev("""(()=>{
       const esBoton=e=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(e.innerText||"");
-      for(const b of btns){let p=b;
+      const tarjetas=[];
+      for(const b of Array.from(document.querySelectorAll("button")).filter(esBoton)){
+        let p=b, card=null;
         for(let i=0;i<12&&p;i++){p=p.parentElement; if(!p) break;
-          const t=p.innerText||"";
-          if(!t.includes(%s)) continue;
-          const cuantos=Array.from(p.querySelectorAll("button")).filter(esBoton).length;
-          if(cuantos===1){b.click(); return "ok";}
-          break;}}
+          if(Array.from(p.querySelectorAll("button")).filter(esBoton).length!==1) break;
+          card=p;}
+        if(!card) continue;
+        const l=(card.innerText||"").split("\\n").map(x=>x.trim()).filter(x=>x.length>2);
+        tarjetas.push({boton:b, titulo:l[0]||""});}
+      const n=%s;
+      let c=tarjetas.filter(x=>x.titulo===n);
+      if(c.length!==1) c=tarjetas.filter(x=>x.titulo.includes(n));
+      if(c.length===1){c[0].boton.click(); return "ok";}
+      if(c.length>1) return "ambiguo:"+c.length;
       return "no-esta";})()""" % json.dumps(nombre), wait=4)
 
 def asiento_gratis():
@@ -120,7 +127,7 @@ def intento(n):
           const nombres=btns.map(b=>{let p=b;
             for(let i=0;i<12&&p;i++){p=p.parentElement; if(!p) break;
               const t=(p.innerText||"").trim();
-              if(t.length>3) return (t.split("\n").filter(z=>z.trim().length>2)[0]||"?").slice(0,40);}
+              if(t.length>3) return (t.split("\\n").filter(z=>z.trim().length>2)[0]||"?").slice(0,40);}
             return "?";});
           // Cualquier nodo que mencione el juego, aunque sea partido o con otro
           // formato: si aparece aca y el matcher no lo vio, el problema es como
@@ -132,6 +139,11 @@ def intento(n):
                                  menciones:suelto, scrollY:window.scrollY,
                                  alto:document.body.scrollHeight});})()""" % GAME.split()[0])
         print("  DIAGNOSTICO: %s" % diag)
+        if r == "no-esta":
+            return ("%r no esta en el catalogo del dashboard — byte lo saco. "
+                    "Paso con Degen Realms Arena el 2026-10-03." % GAME)
+        if isinstance(r, str) and r.startswith("ambiguo"):
+            return "%r matchea varias tarjetas (%s) — hace falta el titulo exacto" % (GAME, r)
         return "no encontre la tarjeta de %r — ver DIAGNOSTICO arriba" % GAME
 
     # Puede entrar directo a la arena, o abrir el modal de asiento.
