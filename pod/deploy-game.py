@@ -109,9 +109,30 @@ def intento(n):
 
     r = clickear_juego(GAME)
     if r != "ok":
-        hay = ev("""JSON.stringify(Array.from(document.querySelectorAll("button"))
-            .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText)).length)""")
-        return "no encontre la tarjeta de %r (habia %s juegos en pantalla)" % (GAME, hay)
+        # Volcado forense. Esta falla es INTERMITENTE: el mismo codigo deployo
+        # Degen Realms bien el 2026-10-03 a las 03:31 y fallo a las 17:51, asi
+        # que no es el matcher sino el estado de la pagina. Ya probe dos teorias
+        # a ciegas (el limite de 420 chars, el ancestro con un solo boton) y las
+        # dos fueron erradas. Sin ver el DOM del momento no se puede saber.
+        diag = ev("""(()=>{
+          const btns=Array.from(document.querySelectorAll("button"))
+            .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText));
+          const nombres=btns.map(b=>{let p=b;
+            for(let i=0;i<12&&p;i++){p=p.parentElement; if(!p) break;
+              const t=(p.innerText||"").trim();
+              if(t.length>3) return (t.split("\n").filter(z=>z.trim().length>2)[0]||"?").slice(0,40);}
+            return "?";});
+          // Cualquier nodo que mencione el juego, aunque sea partido o con otro
+          // formato: si aparece aca y el matcher no lo vio, el problema es como
+          // lo buscamos; si no aparece, la tarjeta directamente no esta.
+          const suelto=Array.from(document.querySelectorAll("*"))
+            .filter(e=>e.children.length===0 && /Degen|%s/i.test(e.textContent||""))
+            .slice(0,6).map(e=>e.tagName+":"+(e.textContent||"").trim().slice(0,60));
+          return JSON.stringify({botones:btns.length, nombres:nombres,
+                                 menciones:suelto, scrollY:window.scrollY,
+                                 alto:document.body.scrollHeight});})()""" % GAME.split()[0])
+        print("  DIAGNOSTICO: %s" % diag)
+        return "no encontre la tarjeta de %r — ver DIAGNOSTICO arriba" % GAME
 
     # Puede entrar directo a la arena, o abrir el modal de asiento.
     def en_arena():
