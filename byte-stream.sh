@@ -14,6 +14,8 @@
 #   ./byte-stream.sh api '<js>'              llama window.byte  (ej: api 'byte.state()')
 #   ./byte-stream.sh look                    lee #byte-state (estado legible por maquina)
 #   ./byte-stream.sh present <bubble|half|full> [px]
+#   ./byte-stream.sh intro <min> [titulo]    pantalla de espera con cuenta regresiva,
+#                                            para darle tiempo a X a enganchar el RTMP
 #   ./byte-stream.sh zoom <factor>           achica el iframe del juego (0.8 = 80%)
 #   ./byte-stream.sh carrusel "A|B|C" <horas> [min]   rota entre juegos, cambiando
 #                                            recien al terminar cada partida
@@ -78,7 +80,7 @@ up)
   echo "pod $POD en $IP:$PORT"
   echo "subiendo scripts y perfil…"
   scpp "$DIR"/pod/* "$PROFILE" "root@$IP:/root/" >/dev/null
-  sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py cdp-dialog.py inject-css.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
+  sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py cdp-dialog.py inject-css.py intro.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
   echo "preparando el pod…"
   sshp "setsid nohup /root/pod-setup.sh >/dev/null 2>&1 </dev/null & echo lanzado"
   # Poll corto: el paso dura entre ~40s (imagen horneada) y ~6 min (base pelada),
@@ -147,6 +149,21 @@ look)
 present)
   load; A="${2:?uso: $0 present bubble|half|full [px]}"; B="${3:-330}"
   sshp "python3 /opt/streamer/cdp.py eval 'JSON.stringify(byte.present({avatar:\"$A\",bubble:$B}) ?? \"ok\")'" ;;
+intro)
+  # Pantalla de espera con cuenta regresiva. X tarda en detectar el RTMP y
+  # engancharlo; si el juego ya esta corriendo en ese hueco, los primeros
+  # minutos de partida se pierden. Esto se lanza ANTES de `go` para que ffmpeg
+  # empuje la cuenta regresiva mientras X despierta.
+  load
+  M="${2:-5}"
+  # Overlay dentro de la pagina, no una ventana aparte: durante la intro no hay
+  # navegacion que lo destruya, y el temporizador vive en el JS de la pagina.
+  # Asi no hace falta ningun proceso que la cierre al vencer el plazo — que fue
+  # exactamente lo que no logre que sobreviviera al cierre del SSH.
+  sshp "python3 /opt/streamer/intro.py '$M' '${3:-byteraa}' '${4:-el stream arranca en}'"
+  ;;
+intro-off)
+  load; sshp "python3 /opt/streamer/intro.py --off" ;;
 zoom)
   # Achica (o agranda) el iframe del juego dentro de la escena cinema. byte no
   # expone ninguna perilla para esto, asi que va por CSS desde la pagina padre,
