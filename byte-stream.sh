@@ -55,61 +55,90 @@ scpp(){ scp -i "$KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=25 -P "$PORT
 
 case "${1:-}" in
 up)
-  OUT=$(python3 "$DIR/rp_create.py") || { echo "$OUT"; exit 1; }
-  echo "$OUT"
-  POD=$(echo "$OUT" | grep -oE 'pod [a-z0-9]+' | awk '{print $2}')
-  K=$(cat ~/.runpod/key)
-  echo "esperando SSH…"
-  for i in $(seq 1 40); do
-    R=$(curl -s --max-time 25 -H "Authorization: Bearer $K" "https://rest.runpod.io/v1/pods/$POD")
-    IP=$(echo "$R" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("publicIp") or "")')
-    PORT=$(echo "$R" | python3 -c 'import sys,json;d=json.load(sys.stdin);print((d.get("portMappings") or {}).get("22") or "")')
-    [ -n "$PORT" ] && break; sleep 12
+  # Examen del host antes de confiarle una transmision. RunPod no deja elegir
+  # maquina, asi que no se puede garantizar una buena — lo que si se puede es
+  # descartar rapido las malas. En unos 30 pods nos tocaron cinco defectuosas y
+  # TODAS se descubrieron tarde, con el stream al aire o sin salir.
+  # Un intento descartado cuesta ~4 minutos y centavos; descubrirlo al aire
+  # costo tardes enteras.
+  preparar_pod(){
+    OUT=$(python3 "$DIR/rp_create.py") || { echo "$OUT"; return 1; }
+    echo "$OUT"
+    POD=$(echo "$OUT" | grep -oE 'pod [a-z0-9]+' | awk '{print $2}')
+    K=$(cat ~/.runpod/key)
+    echo "esperando SSH…"
+    for i in $(seq 1 40); do
+      R=$(curl -s --max-time 25 -H "Authorization: Bearer $K" "https://rest.runpod.io/v1/pods/$POD")
+      IP=$(echo "$R" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("publicIp") or "")')
+      PORT=$(echo "$R" | python3 -c 'import sys,json;d=json.load(sys.stdin);print((d.get("portMappings") or {}).get("22") or "")')
+      [ -n "$PORT" ] && break; sleep 12
+    done
+    # Un pod que nunca expone SSH IGUAL se alquila y se cobra. Salir sin
+    # destruirlo deja un huerfano que ni siquiera queda en .state, asi que nadie
+    # se entera hasta mirar la factura. Pasa seguido en COMMUNITY: el host acepta
+    # el alquiler y no provisiona nunca.
+    if [ -z "${PORT:-}" ]; then
+      echo "el pod no expuso SSH — destruyendolo para no pagarlo de gusto"
+      "$DIR/rp_destroy.sh" "$POD" || echo "NO SE PUDO DESTRUIR $POD — borralo a mano"
+      echo "probá de nuevo, y si se repite forzá datacenter: BYTE_CLOUD=SECURE $0 up"
+      return 1
+    fi
+    printf 'POD=%s\nIP=%s\nPORT=%s\n' "$POD" "$IP" "$PORT" > "$STATE"
+    echo "pod $POD en $IP:$PORT"
+    echo "subiendo scripts y perfil…"
+    scpp "$DIR"/pod/* "$PROFILE" "root@$IP:/root/" >/dev/null
+    sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py cdp-dialog.py inject-css.py intro.py bets.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
+    echo "preparando el pod…"
+    sshp "setsid nohup /root/pod-setup.sh >/dev/null 2>&1 </dev/null & echo lanzado"
+    # Poll corto: el paso dura entre ~40s (imagen horneada) y ~6 min (base pelada),
+    # y con sleep 25 se tiraban hasta 25s de puro esperar despues de terminar.
+    for i in $(seq 1 150); do
+      sshp "test -f /root/SETUP_DONE && echo READY" 2>/dev/null | grep -q READY && { echo "setup listo"; break; }
+      [ $((i % 5)) -eq 0 ] && echo "  preparando… ($((i*6))s)"
+      sleep 6
+    done
+    sshp "test -f /root/SETUP_DONE" || { echo "el setup no termino — mirá /root/setup.log"; return 1; }
+    # Los ### del setup dicen donde se fue el tiempo. Sin esto optimizamos a ciegas.
+    sshp "grep -a '^###' /root/setup.log" 2>/dev/null
+    echo "levantando Chrome…"
+    # launch-desktop.sh escribe FIN en desktop.status cuando termina: esperar ESO
+    # en vez de un sleep fijo de 100s.
+    sshp "setsid nohup /root/launch-desktop.sh >/dev/null 2>&1 </dev/null & \
+          for i in \$(seq 1 40); do sleep 5; grep -qE '^(FIN|XVFB FALLO|CHROME FALLO)\$' /root/desktop.status 2>/dev/null && break; done; \
+          cat /root/desktop.status"
+    echo "rehaciendo login de byte (la cookie no viaja en el perfil)…"
+    sshp "python3 /opt/streamer/relogin.py"
+    echo "revisando el host…"
+    if ! sshp "/root/examen.sh"; then
+      echo "este host no sirve — lo descarto"
+      return 2
+    fi
+
+    # TTL desde el minuto cero, no desde que alguien se acuerde de armarlo. Se
+    # puede pisar antes (BYTE_TTL_HORAS=5 ./byte-stream.sh up) o despues
+    # ($0 ttl <horas>). Default conservador: una corrida tipica dura 1-2 h.
+    TTLH="${BYTE_TTL_HORAS:-3}"
+    D=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$TTLH")
+    printf 'DEADLINE=%s\n' "$D" | sshp "cat > /root/.ttl"
+    printf 'DEADLINE=%s\n' "$D" >> "$STATE"
+    sshp "/root/start-ttl.sh" || echo "OJO: el TTL del pod no arranco"
+    echo "TTL: $TTLH h — el pod se apaga solo a las $(date -r "$D" '+%H:%M')"
+    return 0
+  }
+
+  for intento in 1 2 3; do
+    POD=""; IP=""; PORT=""
+    preparar_pod; r=$?
+    [ "$r" -eq 0 ] && break
+    # Pase lo que pase, el pod NO queda prendido: antes, si el setup fallaba, el
+    # script salia dejandolo facturando.
+    if [ -n "${POD:-}" ]; then
+      "$DIR/rp_destroy.sh" "$POD" >/dev/null 2>&1 && echo "pod $POD destruido"
+    fi
+    rm -f "$STATE"
+    [ "$intento" -eq 3 ] && { echo "tres hosts seguidos fallaron — pruebo mas tarde o con otra GPU"; exit 1; }
+    echo "intento $((intento+1)) de 3…"
   done
-  # Un pod que nunca expone SSH IGUAL se alquila y se cobra. Salir sin
-  # destruirlo deja un huerfano que ni siquiera queda en .state, asi que nadie
-  # se entera hasta mirar la factura. Pasa seguido en COMMUNITY: el host acepta
-  # el alquiler y no provisiona nunca.
-  if [ -z "${PORT:-}" ]; then
-    echo "el pod no expuso SSH — destruyendolo para no pagarlo de gusto"
-    "$DIR/rp_destroy.sh" "$POD" || echo "NO SE PUDO DESTRUIR $POD — borralo a mano"
-    echo "probá de nuevo, y si se repite forzá datacenter: BYTE_CLOUD=SECURE $0 up"
-    exit 1
-  fi
-  printf 'POD=%s\nIP=%s\nPORT=%s\n' "$POD" "$IP" "$PORT" > "$STATE"
-  echo "pod $POD en $IP:$PORT"
-  echo "subiendo scripts y perfil…"
-  scpp "$DIR"/pod/* "$PROFILE" "root@$IP:/root/" >/dev/null
-  sshp "mkdir -p /opt/streamer && cd /root && cp cdp.py cdp-dialog.py inject-css.py intro.py bets.py stream.sh stream-mode.py chat-bridge.py relogin.py deploy-game.py /opt/streamer/ && chmod +x /opt/streamer/* /root/*.sh && tar xzf byte-profile-slim.tgz"
-  echo "preparando el pod…"
-  sshp "setsid nohup /root/pod-setup.sh >/dev/null 2>&1 </dev/null & echo lanzado"
-  # Poll corto: el paso dura entre ~40s (imagen horneada) y ~6 min (base pelada),
-  # y con sleep 25 se tiraban hasta 25s de puro esperar despues de terminar.
-  for i in $(seq 1 150); do
-    sshp "test -f /root/SETUP_DONE && echo READY" 2>/dev/null | grep -q READY && { echo "setup listo"; break; }
-    [ $((i % 5)) -eq 0 ] && echo "  preparando… ($((i*6))s)"
-    sleep 6
-  done
-  sshp "test -f /root/SETUP_DONE" || { echo "el setup no termino — mirá /root/setup.log"; exit 1; }
-  # Los ### del setup dicen donde se fue el tiempo. Sin esto optimizamos a ciegas.
-  sshp "grep -a '^###' /root/setup.log" 2>/dev/null
-  echo "levantando Chrome…"
-  # launch-desktop.sh escribe FIN en desktop.status cuando termina: esperar ESO
-  # en vez de un sleep fijo de 100s.
-  sshp "setsid nohup /root/launch-desktop.sh >/dev/null 2>&1 </dev/null & \
-        for i in \$(seq 1 40); do sleep 5; grep -qE '^(FIN|XVFB FALLO|CHROME FALLO)\$' /root/desktop.status 2>/dev/null && break; done; \
-        cat /root/desktop.status"
-  echo "rehaciendo login de byte (la cookie no viaja en el perfil)…"
-  sshp "python3 /opt/streamer/relogin.py"
-  # TTL desde el minuto cero, no desde que alguien se acuerde de armarlo. Se
-  # puede pisar antes (BYTE_TTL_HORAS=5 ./byte-stream.sh up) o despues
-  # ($0 ttl <horas>). Default conservador: una corrida tipica dura 1-2 h.
-  TTLH="${BYTE_TTL_HORAS:-3}"
-  D=$(python3 -c 'import time,sys; print(int(time.time()+float(sys.argv[1])*3600))' "$TTLH")
-  printf 'DEADLINE=%s\n' "$D" | sshp "cat > /root/.ttl"
-  printf 'DEADLINE=%s\n' "$D" >> "$STATE"
-  sshp "/root/start-ttl.sh" || echo "OJO: el TTL del pod no arranco"
-  echo "TTL: $TTLH h — el pod se apaga solo a las $(date -r "$D" '+%H:%M')"
   ;;
 deploy) load; sshp "python3 /opt/streamer/deploy-game.py '${2:-Infinite Cinema}'"; sshp "/root/fullscreen.sh; python3 /opt/streamer/stream-mode.py" ;;
 go)
