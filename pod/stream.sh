@@ -20,7 +20,16 @@ DESTFILE="${DESTFILE:-/root/.dests}"
 mapfile -t LINES < <(grep -v '^[[:space:]]*$' "$DESTFILE" 2>/dev/null)
 if [ "${#LINES[@]}" -eq 0 ]; then echo "no hay destinos en $DESTFILE"; exit 1; fi
 
-if ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=320x240:rate=30 \
+# timeout: la sonda PUEDE COLGARSE. El 2026-10-15 se quedo trabada en un host y
+# stream.sh nunca paso de esta linea: ningun stream abierto, ffmpeg.log en cero,
+# y un "ffmpeg" vivo que era la sonda y no una transmision. Desde afuera parecia
+# que X rechazaba la conexion, y perdimos un buen rato mirando para el lado
+# equivocado. Si no contesta en 20s, no hay NVENC y se sigue con x264.
+#
+# El -k es necesario: en ese host la sonda quedo colgada DENTRO del driver y no
+# moria con la señal normal — "timeout 20" seguia vivo despues de dos minutos.
+# Con -k se le manda KILL 5s despues y el script puede seguir con x264.
+if timeout -k 5 20 ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=320x240:rate=30 \
      -t 1 -c:v h264_nvenc -f null - >/dev/null 2>&1; then
   VENC=(-c:v h264_nvenc -preset p4 -tune ll -rc cbr); echo "encoder: NVENC"
 else
