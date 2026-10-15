@@ -63,24 +63,33 @@ def esperar(cond, segundos, paso=2):
         time.sleep(paso)
     return None
 
+# Criterio de "boton que lanza el juego". byte renombro los labels el
+# 2026-10-10: "Deploy agent" paso a ser "Play" y cada tarjeta sumo un
+# "Configure". El matcher buscaba los labels viejos y de golpe no vio NINGUNA
+# tarjeta. Se aceptan los dos juegos de labels por si vuelven atras, y "play" se
+# exige como texto COMPLETO del boton para no comerse un "Configure" ni un
+# "Replay".
+ESBOTON = (
+    'const esBoton=e=>{const t=(e.innerText||"").trim();'
+    'return /^(▸\\s*)?play$/i.test(t)'
+    '||/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(t)};'
+)
+
 def hay_tarjetas():
-    return ev("""Array.from(document.querySelectorAll("button"))
-        .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText)).length""") or 0
+    return ev("(()=>{%s return Array.from(document.querySelectorAll('button'))"
+              ".filter(esBoton).length})()" % ESBOTON) or 0
 
 def clickear_juego(nombre):
-    # Se sube desde cada boton de deploy hasta la TARJETA: el ancestro mas grande
-    # que siga teniendo UN SOLO boton de deploy. El titulo es su primera linea.
-    # Despues se exige coincidencia EXACTA de titulo, y recien si no hay se cae a
-    # substring.
+    # Se sube desde cada boton hasta la TARJETA: el ancestro mas grande que siga
+    # teniendo UN SOLO boton de lanzar. El titulo es su primera linea. Despues se
+    # exige coincidencia EXACTA de titulo, y solo si no hay se cae a substring.
     #
     # Lo exacto no es capricho: varios nombres son prefijo de otros. Verificado
     # contra el catalogo real el 2026-10-04, "Backrooms" matcheaba 2 tarjetas
     # (tambien la "Fruit Fly edition") y "Solana Survivors" matcheaba 3. Con
-    # substring se clickeaba la que apareciera primero, o sea a veces el juego
-    # equivocado y sin que nadie se enterara. Con titulo exacto, los 13 juegos
-    # del catalogo resuelven a una sola tarjeta.
-    return ev("""(()=>{
-      const esBoton=e=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(e.innerText||"");
+    # substring se clickeaba la primera que apareciera, o sea a veces el juego
+    # equivocado y sin que nadie se enterara.
+    js = """(()=>{%s
       const tarjetas=[];
       for(const b of Array.from(document.querySelectorAll("button")).filter(esBoton)){
         let p=b, card=null;
@@ -95,15 +104,34 @@ def clickear_juego(nombre):
       if(c.length!==1) c=tarjetas.filter(x=>x.titulo.includes(n));
       if(c.length===1){c[0].boton.click(); return "ok";}
       if(c.length>1) return "ambiguo:"+c.length;
-      return "no-esta";})()""" % json.dumps(nombre), wait=4)
+      return "no-esta";})()""" % (ESBOTON, json.dumps(nombre))
+    return ev(js, wait=4)
 
 def asiento_gratis():
     """Algunos juegos abren un modal con entrada paga o gratis. SIEMPRE el gratis:
     el pago se debita de la wallet del agente (vimos ~27.000 $BYTE)."""
+    # El texto del modal cambio con el rediseño del 2026-10-10: antes decia
+    # "Free seat / $0 / Same game, nothing spent", ahora solo "🎟 Free seat".
+    # El filtro pedia "nothing spent" y dejo de encontrarlo, asi que el deploy
+    # clickeaba el juego y se quedaba para siempre en el dashboard.
+    #
+    # La condicion negativa es la que importa: al lado hay un boton que debita
+    # ~26.000 $BYTE de la wallet del agente. Se exige "free seat" Y que NO diga
+    # "pay", verificado contra el modal real (gratis: "🎟 Free seat",
+    # pago: "💰 Pay ~26,437 $BYTE (live)").
+    # Hay DOS modales distintos, segun el juego:
+    #   - de pago: "💰 Pay ~26,437 $BYTE (live)"  junto a  "🎟 Free seat"
+    #   - gratis : "entry free ..."               y solo   "▸ Go live"
+    # El filtro conocia solo el primero, asi que con los gratis (Free Bots,
+    # Degen Realms) clickeaba el juego y se quedaba para siempre en el
+    # dashboard. Visto el 2026-10-11 con los dos modales en la mano.
+    #
+    # La condicion negativa es la que protege: nunca se toca un boton que diga
+    # "pay", porque debita de la wallet del agente.
     return ev("""(()=>{const c=Array.from(document.querySelectorAll("button")).filter(e=>{
-        const t=e.innerText||"";
-        return /Free seat/i.test(t)&&/nothing spent/i.test(t)&&!/Pay to play/i.test(t)&&e.offsetWidth>0});
-      if(!c.length)return "";c[0].click();return "gratis";})()""", wait=4)
+        const t=(e.innerText||"").trim();
+        return /free seat|go live/i.test(t)&&!/pay/i.test(t)&&e.offsetWidth>0});
+      if(!c.length)return "";c[0].click();return c[0].innerText.trim();})()""", wait=4)
 
 def ya_jugando():
     return ev("/already playing/i.test(document.body.innerText)")
@@ -121,9 +149,8 @@ def intento(n):
         # que no es el matcher sino el estado de la pagina. Ya probe dos teorias
         # a ciegas (el limite de 420 chars, el ancestro con un solo boton) y las
         # dos fueron erradas. Sin ver el DOM del momento no se puede saber.
-        diag = ev("""(()=>{
-          const btns=Array.from(document.querySelectorAll("button"))
-            .filter(x=>/DEPLOY AGENT|ENTER EVENT|FREE SEAT/i.test(x.innerText));
+        diag = ev("""(()=>{""" + ESBOTON + """
+          const btns=Array.from(document.querySelectorAll("button")).filter(esBoton);
           const nombres=btns.map(b=>{let p=b;
             for(let i=0;i<12&&p;i++){p=p.parentElement; if(!p) break;
               const t=(p.innerText||"").trim();
@@ -151,8 +178,9 @@ def intento(n):
         return "/arena/" in url()
     if esperar(en_arena, 20):
         return None
-    if asiento_gratis():
-        print("  modal de asiento: elegi el gratis")
+    r2 = asiento_gratis()
+    if r2:
+        print("  modal de entrada: clickee %r" % r2)
         if esperar(en_arena, 45):
             return None
     if ya_jugando():

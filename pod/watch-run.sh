@@ -109,6 +109,9 @@ cambiar_a() {
   # El CSS inyectado no sobrevive a la navegacion: sin esto el zoom del iframe
   # se perdia en cada cambio y nadie se enteraba hasta mirar el stream.
   python3 /opt/streamer/inject-css.py >> "$LOG" 2>&1
+  # Mismo motivo que el CSS: el overlay de apuestas no sobrevive a la
+  # navegacion, asi que se repone si quedo pedido.
+  [ -f /root/.bets ] && python3 /opt/streamer/bets.py on >> "$LOG" 2>&1
   sleep 2
   /root/placa.sh --off          # recien aca se descubre, con el juego ya puesto
   printf '%s' "$nuevo"
@@ -127,7 +130,8 @@ cortar() { # $1 = motivo
 SID=""
 while true; do
   R=$(estado); S="${R%%|*}"; ID="${R#*|}"
-  [ -n "$ID" ] && [ -z "$SID" ] && { SID="$ID"; echo "$(date -Is) vigilando la corrida $SID" >> "$LOG"; }
+  [ -n "$ID" ] && [ -z "$SID" ] && { SID="$ID"; RUN_INICIO=$(date +%s); JUEGO_ACTUAL=""
+    echo "$(date -Is) vigilando la corrida $SID (heredada: no se de que juego es)" >> "$LOG"; }
 
   FIN=""
   # Lista EXPLICITA de estados finales. Antes era al reves —cortaba con
@@ -150,8 +154,40 @@ while true; do
   if [ -n "$FIN" ]; then
     AHORA=$(date +%s)
     if [ "${#JUEGOS[@]}" -gt 0 ] && [ "$AHORA" -lt "$KEEP_UNTIL" ]; then
+      # Un juego ROTO no se reintenta en loop. El 2026-10-07 el backend de Hells
+      # Agents dejo de responder ("could not start: timed out after 12000ms") y
+      # como su turno no habia vencido, el carrusel lo redeployaba cada minuto:
+      # deploy, error al minuto, deploy. Media hora de aire quemada en un juego
+      # que no arranca. Si una corrida muere con error antes de los 2 minutos,
+      # el juego no esta sano: se pasa al siguiente sin esperar el turno.
+      DURACION=$(( AHORA - ${RUN_INICIO:-$AHORA} ))
+      ROTO=""
+      # Solo se culpa al juego si la corrida que murio la deployamos NOSOTROS y
+      # sabemos cual era. Sin esta condicion, una sesion ajena o heredada hace
+      # que se castigue al juego al que apunta el indice, que puede no haber
+      # corrido nunca: el 2026-10-07 marque Degen Realms como roto y lo saltee
+      # sin haberlo deployado una sola vez — el que habia fallado era Hells.
+      if [ -n "${JUEGO_ACTUAL:-}" ] && [ "$JUEGO_ACTUAL" = "${JUEGOS[$IDX]}" ]; then
+        case "$FIN" in
+          *error*|*failed*) [ "$DURACION" -lt 120 ] && ROTO="si" ;;
+        esac
+      fi
+      # Si la corrida que termino NO era nuestra (heredada al arrancar, o quedo de
+      # un deploy anterior), el turno que acaba de correr no lo consumio el juego
+      # del indice: lo consumio otro. Entonces no se avanza — se arranca el juego
+      # que corresponde, que todavia no jugo. El 2026-10-07 sin esto Degen Realms
+      # perdio su turno completo mientras al aire habia una partida de Survivors,
+      # y despues lo saltearon por "vencido" sin haber jugado una sola vez.
+      if [ -z "${JUEGO_ACTUAL:-}" ] && [ "${#JUEGOS[@]}" -gt 0 ]; then
+        TURNO_FIN=$(( AHORA + KEEP_TURNO )); guardar_estado
+        echo "$(date -Is) termino una corrida heredada — le doy su turno a \"${JUEGOS[$IDX]}\", que todavia no jugo" >> "$LOG"
+      elif [ -n "$ROTO" ] && [ "${#JUEGOS[@]}" -gt 1 ]; then
+        echo "$(date -Is) \"$JUEGO_ACTUAL\" murio a los ${DURACION}s con $FIN — lo salteo, no lo reintento" >> "$LOG"
+        IDX=$(( (IDX + 1) % ${#JUEGOS[@]} ))
+        TURNO_FIN=$(( AHORA + KEEP_TURNO )); guardar_estado
+        echo "$(date -Is) paso a \"${JUEGOS[$IDX]}\"" >> "$LOG"
       # Aca se decide si rota o repite.
-      if [ "$AHORA" -ge "$TURNO_FIN" ] && [ "${#JUEGOS[@]}" -gt 1 ]; then
+      elif [ "$AHORA" -ge "$TURNO_FIN" ] && [ "${#JUEGOS[@]}" -gt 1 ]; then
         IDX=$(( (IDX + 1) % ${#JUEGOS[@]} ))
         TURNO_FIN=$(( AHORA + KEEP_TURNO )); guardar_estado
         echo "$(date -Is) se cumplio el turno — paso a \"${JUEGOS[$IDX]}\"" >> "$LOG"
@@ -160,7 +196,7 @@ while true; do
       fi
       NUEVO=$(cambiar_a "${JUEGOS[$IDX]}")
       if [ -n "$NUEVO" ]; then
-        SID="$NUEVO"
+        SID="$NUEVO"; RUN_INICIO=$(date +%s); JUEGO_ACTUAL="${JUEGOS[$IDX]}"
         echo "$(date -Is) al aire en $SID con \"${JUEGOS[$IDX]}\" (el stream nunca se corto)" >> "$LOG"
         sleep "$POLL"; continue
       fi
@@ -172,7 +208,7 @@ while true; do
         echo "$(date -Is) fallo el anterior — intento con \"${JUEGOS[$IDX]}\"" >> "$LOG"
         NUEVO=$(cambiar_a "${JUEGOS[$IDX]}")
         if [ -n "$NUEVO" ]; then
-          SID="$NUEVO"
+          SID="$NUEVO"; RUN_INICIO=$(date +%s); JUEGO_ACTUAL="${JUEGOS[$IDX]}"
           echo "$(date -Is) al aire en $SID con \"${JUEGOS[$IDX]}\"" >> "$LOG"
           sleep "$POLL"; continue
         fi

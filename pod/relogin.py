@@ -29,7 +29,20 @@ ev("location.href='https://app.bytearena.fun/auth/notlogin/start?next=%2F'", wai
 txt = ev("(document.body.innerText.match(/Signed in as[^\\n]{0,40}/i)||['(no reconocido)'])[0]")
 print("   notlogin dice:", txt)
 print("2) autorizando…")
+# El label del boton cambio: era "Authorize Byte" y el 2026-10-13 paso a ser
+# solo "Authorize" (al lado hay un "Accept"). El matcher viejo no lo encontraba
+# y el login quedaba a medias. Se aceptan las tres variantes, y se excluyen
+# explicitamente "Reject" y "Cancel", que estan en la misma pantalla.
 print("  ", ev("""(()=>{const b=Array.from(document.querySelectorAll("button,a"))
-        .find(x=>/authorize byte/i.test(x.innerText)); if(!b) return "no hay boton Authorize";
-        b.click(); return "click Authorize Byte";})()""", wait=12))
-print("3) logueado:", ev("/log out|PROFILE/i.test(document.body.innerText)?'SI':'NO'"))
+        .filter(x=>{const t=(x.innerText||"").trim();
+          return /^(authorize|accept)$|authorize byte/i.test(t) && !/reject|cancel/i.test(t);});
+        if(!b.length) return "no hay boton de autorizar";
+        b[0].click(); return "click en " + JSON.stringify(b[0].innerText.trim());})()""", wait=12))
+
+# El chequeo viejo buscaba "log out" en la pagina del callback, que todavia no
+# habia cargado el dashboard: daba SI con la sesion sin establecer. Ahora se va
+# al dashboard y se comprueba lo CONTRARIO —que no haya boton de "log in"— que
+# es la señal que de verdad distingue.
+ev("location.href='https://app.bytearena.fun/dashboard'", wait=12)
+print("3) logueado:", ev("""(()=>{const t=document.body.innerText;
+      return (!/\\blog in\\b/i.test(t) && /log out/i.test(t)) ? 'SI' : 'NO';})()"""))
