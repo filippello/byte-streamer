@@ -83,6 +83,20 @@ up)
       echo "probá de nuevo, y si se repite forzá datacenter: BYTE_CLOUD=SECURE $0 up"
       return 1
     fi
+    # Tope de precio. RunPod no deja elegir maquina y los precios varian MUCHO:
+    # lo habitual son ~$0.27/h, pero el 2026-10-15 nos toco uno de $0.89/h y
+    # nadie lo noto hasta que llevaba once horas encendido — $10.50 en vez de
+    # $3. Un host caro no es defectuoso, pero para esto es tan descartable como
+    # uno roto: se busca otro.
+    PRECIO=$(curl -s --max-time 25 -H "Authorization: Bearer $K" \
+      "https://rest.runpod.io/v1/pods/$POD" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin).get("costPerHr") or 0)' 2>/dev/null)
+    TOPE="${BYTE_MAX_PRECIO:-0.45}"
+    if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$PRECIO" "$TOPE" 2>/dev/null; then
+      echo "este host sale \$$PRECIO/h, por encima del tope de \$$TOPE — lo descarto"
+      return 2
+    fi
+    echo "precio: \$$PRECIO/h (tope \$$TOPE)"
     printf 'POD=%s\nIP=%s\nPORT=%s\n' "$POD" "$IP" "$PORT" > "$STATE"
     echo "pod $POD en $IP:$PORT"
     echo "subiendo scripts y perfil…"
